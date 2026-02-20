@@ -394,7 +394,7 @@ function Field({tA,tB,period,tryType,swapped}){
       const z=mode==="def"?(ZONE_MIRROR[rawZ]||rawZ):rawZ;
       if(!counts.hasOwnProperty(z))return;
       counts[z]++;
-      const name=mode==="def"?r.c:r.s;
+      const name=mode==="def"?r.p:r.s;
       players[z][name]=(players[z][name]||0)+1;
     });
     const tot=Object.values(counts).reduce((a,b)=>a+b,0);
@@ -469,7 +469,7 @@ function Field({tA,tB,period,tryType,swapped}){
                   <div style={{maxHeight:95,overflowY:'auto'}}>{aPlayers.map(([n,c],i)=><div key={i} className="zdr"><span className="zpn">{n}</span><span className="zpc" style={{color:'var(--acc)'}}>{c}</span></div>)}</div>}
               </div>
               <div>
-                <div className="zdt" style={{color:'#ffffff'}}>{bKey} conceded by - {mirrorZ}</div>
+                <div className="zdt" style={{color:'#ffffff'}}>{bKey} conceded to - {mirrorZ}</div>
                 {bPlayers.length===0?<div className="nd">No tries</div>:
                   <div style={{maxHeight:95,overflowY:'auto'}}>{bPlayers.map(([n,c],i)=><div key={i} className="zdr"><span className="zpn">{n}</span><span className="zpc" style={{color:'var(--red)'}}>{c}</span></div>)}</div>}
               </div>
@@ -630,6 +630,18 @@ function PC({pl, side, teamKey, oppKey, srMode, srPeriod, venue, isExp, onTog}) 
   const c = tcol(teamKey);
 
   const sr = useMemo(() => {
+    if (srMode === 'posVsOpp') {
+      // Count tries scored by this position against the opponent from tryscorer data
+      const pos = pl.pos;
+      const recs = TRY_RECS.filter(r => r.p === pos && r.op === oppKey);
+      // Count unique rounds as games
+      const rounds = [...new Set(TRY_RECS.filter(r => r.op === oppKey).map(r => r.r))];
+      const tot = rounds.length;
+      if (tot === 0) return null;
+      const triesScored = recs.length;
+      const roundsWithTry = [...new Set(recs.map(r => r.r))].length;
+      return {scored: roundsWithTry, tot, pct: Math.round(roundsWithTry/tot*100), tries: triesScored};
+    }
     let games = PGAMES[pl.pl] || [];
     if (srMode === 'h2h') games = games.filter(g => g.o === oppKey);
     else if (srMode === 'venue') games = games.filter(g => g.v === venue);
@@ -643,7 +655,7 @@ function PC({pl, side, teamKey, oppKey, srMode, srPeriod, venue, isExp, onTog}) 
     if (tot === 0) return null;
     const scored = games.filter(g => g.t > 0).length;
     return {scored, tot, pct: Math.round(scored/tot*100)};
-  }, [pl.pl, srMode, srPeriod, oppKey, venue]);
+  }, [pl.pl, pl.pos, srMode, srPeriod, oppKey, venue]);
 
   const srPct = sr ? sr.pct : null;
   const srClass = srPct===null ? '' : (srPct>=70?'sr-grn':(srPct>=40?'sr-ylw':'sr-red'));
@@ -666,10 +678,28 @@ function PC({pl, side, teamKey, oppKey, srMode, srPeriod, venue, isExp, onTog}) 
   );
 }
 
-function PD({pn, teamKey, oppKey, srMode, srPeriod, venue}) {
+function PD({pn, teamKey, oppKey, srMode, srPeriod, venue, playerPos}) {
   const allG = PGAMES[pn] || [];
 
+  // posVsOpp: show tryscorer data for this position vs opponent
+  const pvoData = useMemo(() => {
+    if (srMode !== 'posVsOpp') return null;
+    const pos = playerPos;
+    const recs = TRY_RECS.filter(r => r.p === pos && r.op === oppKey);
+    // Group by round to show per-round breakdown
+    const byRound = {};
+    recs.forEach(r => {
+      if (!byRound[r.r]) byRound[r.r] = [];
+      byRound[r.r].push(r);
+    });
+    const scorers = {};
+    recs.forEach(r => { scorers[r.s] = (scorers[r.s]||0)+1; });
+    const sortedScorers = Object.entries(scorers).sort((a,b) => b[1]-a[1]);
+    return {recs, byRound, sortedScorers, total: recs.length};
+  }, [srMode, playerPos, oppKey]);
+
   const filteredG = useMemo(() => {
+    if (srMode === 'posVsOpp') return [];
     let games = [...allG];
     if (srMode === 'h2h') games = games.filter(g => g.o === oppKey);
     else if (srMode === 'venue') games = games.filter(g => g.v === venue);
@@ -682,15 +712,17 @@ function PD({pn, teamKey, oppKey, srMode, srPeriod, venue}) {
   }, [allG, srMode, srPeriod, oppKey, venue]);
 
   const summary = useMemo(() => {
+    if (srMode === 'posVsOpp') return null;
     const n = filteredG.length;
     if (n === 0) return null;
     const tries = filteredG.reduce((s,g) => s+g.t, 0);
     const g1 = filteredG.filter(g => g.t >= 1).length;
     const g2 = filteredG.filter(g => g.t >= 2).length;
     return {games:n, tries, sr1:Math.round(g1/n*100), sr2:Math.round(g2/n*100)};
-  }, [filteredG]);
+  }, [filteredG, srMode]);
 
   const logGames = useMemo(() => {
+    if (srMode === 'posVsOpp') return [];
     let games = [...allG];
     if (srMode === 'h2h') games = games.filter(g => g.o === oppKey);
     else if (srMode === 'venue') games = games.filter(g => g.v === venue);
@@ -698,40 +730,68 @@ function PD({pn, teamKey, oppKey, srMode, srPeriod, venue}) {
     return games;
   }, [allG, srMode, oppKey, venue]);
 
-  const modeLabel = srMode === 'h2h' ? `vs ${abbr(oppKey)}` : (srMode === 'venue' ? `at ${venue}` : 'All Games');
+  const modeLabel = srMode === 'posVsOpp' ? `${playerPos} vs ${oppKey}` : (srMode === 'h2h' ? `vs ${abbr(oppKey)}` : (srMode === 'venue' ? `at ${venue}` : 'All Games'));
 
   return (
     <div className="pd">
-      {summary && (
-        <div className="srow" style={{marginTop:0,borderTop:'none',paddingTop:0}}>
-          <span><b style={{color:'var(--t1)'}}>Games:</b> {summary.games}</span>
-          <span><b style={{color:'var(--t1)'}}>Tries:</b> {summary.tries}</span>
-          <span><b style={{color:'var(--grn)'}}>1+ SR:</b> {summary.sr1}%</span>
-          <span><b style={{color:'var(--ylw)'}}>2+ SR:</b> {summary.sr2}%</span>
-        </div>
-      )}
-      {logGames.length > 0 ? (
-        <div className="ds">
-          <div className="dl">{modeLabel} Game Log ({logGames.length} games)</div>
-          <div className="glt-wrap">
-            <table className="glt">
-              <thead><tr><th>Date</th><th>Opp</th><th>Pos</th><th>Tries</th><th>Venue</th></tr></thead>
-              <tbody>
-                {logGames.map((g,i) => (
-                  <tr key={i}>
-                    <td>{g.dt}</td>
-                    <td>{abbr(g.o)}</td>
-                    <td>{PA[g.p]||g.p}</td>
-                    <td>{g.t>0?<span className="th">{g.t}</span>:g.t}</td>
-                    <td>{g.v}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      {srMode === 'posVsOpp' && pvoData ? (
+        <>
+          <div className="srow" style={{marginTop:0,borderTop:'none',paddingTop:0}}>
+            <span><b style={{color:'var(--t1)'}}>{playerPos} vs {oppKey}:</b> {pvoData.total} tries in {Object.keys(pvoData.byRound).length} rounds</span>
           </div>
-        </div>
+          {pvoData.sortedScorers.length > 0 && (
+            <div className="ds">
+              <div className="dl">Scorers from {playerPos} vs {oppKey}</div>
+              <div className="glt-wrap">
+                <table className="glt">
+                  <thead><tr><th>Player</th><th>Tries</th></tr></thead>
+                  <tbody>
+                    {pvoData.sortedScorers.map(([name,cnt],i) => (
+                      <tr key={i}>
+                        <td style={{color:'var(--t1)'}}>{name}</td>
+                        <td><span className="th">{cnt}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
       ) : (
-        <div className="nd">No game data available for this filter</div>
+        <>
+          {summary && (
+            <div className="srow" style={{marginTop:0,borderTop:'none',paddingTop:0}}>
+              <span><b style={{color:'var(--t1)'}}>Games:</b> {summary.games}</span>
+              <span><b style={{color:'var(--t1)'}}>Tries:</b> {summary.tries}</span>
+              <span><b style={{color:'var(--grn)'}}>1+ SR:</b> {summary.sr1}%</span>
+              <span><b style={{color:'var(--ylw)'}}>2+ SR:</b> {summary.sr2}%</span>
+            </div>
+          )}
+          {logGames.length > 0 ? (
+            <div className="ds">
+              <div className="dl">{modeLabel} Game Log ({logGames.length} games)</div>
+              <div className="glt-wrap">
+                <table className="glt">
+                  <thead><tr><th>Date</th><th>Opp</th><th>Pos</th><th>Tries</th><th>Venue</th></tr></thead>
+                  <tbody>
+                    {logGames.map((g,i) => (
+                      <tr key={i}>
+                        <td>{g.dt}</td>
+                        <td>{abbr(g.o)}</td>
+                        <td>{PA[g.p]||g.p}</td>
+                        <td>{g.t>0?<span className="th">{g.t}</span>:g.t}</td>
+                        <td>{g.v}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            <div className="nd">No game data available for this filter</div>
+          )}
+        </>
       )}
     </div>
   );
@@ -783,8 +843,8 @@ function TLS({game, srMode, srPeriod, srTryTime}) {
               <div className="mp"><span className="mpb">{m.l}</span></div>
               <PC pl={m.b} side="right" srMode={srMode} srPeriod={srPeriod} teamKey={game.t2} oppKey={game.t1} venue={game.v} isExp={sB} onTog={() => kB && tog(kB)}/>
             </div>
-            {sA && m.a && <PD pn={m.a.pl} teamKey={game.t1} oppKey={game.t2} srMode={srMode} srPeriod={srPeriod} venue={game.v}/>}
-            {sB && m.b && <PD pn={m.b.pl} teamKey={game.t2} oppKey={game.t1} srMode={srMode} srPeriod={srPeriod} venue={game.v}/>}
+            {sA && m.a && <PD pn={m.a.pl} teamKey={game.t1} oppKey={game.t2} srMode={srMode} srPeriod={srPeriod} venue={game.v} playerPos={m.a.pos}/>}
+            {sB && m.b && <PD pn={m.b.pl} teamKey={game.t2} oppKey={game.t1} srMode={srMode} srPeriod={srPeriod} venue={game.v} playerPos={m.b.pos}/>}
           </React.Fragment>
         );
       })}
@@ -804,8 +864,8 @@ function TLS({game, srMode, srPeriod, srTryTime}) {
                   <div className="mp"><span className="mpb">INT</span></div>
                   <PC pl={pB} side="right" srMode={srMode} srPeriod={srPeriod} teamKey={game.t2} oppKey={game.t1} venue={game.v} isExp={sB} onTog={() => kB && tog(kB)}/>
                 </div>
-                {sA && pA && <PD pn={pA.pl} teamKey={game.t1} oppKey={game.t2} srMode={srMode} srPeriod={srPeriod} venue={game.v}/>}
-                {sB && pB && <PD pn={pB.pl} teamKey={game.t2} oppKey={game.t1} srMode={srMode} srPeriod={srPeriod} venue={game.v}/>}
+                {sA && pA && <PD pn={pA.pl} teamKey={game.t1} oppKey={game.t2} srMode={srMode} srPeriod={srPeriod} venue={game.v} playerPos={pA.pos}/>}
+                {sB && pB && <PD pn={pB.pl} teamKey={game.t2} oppKey={game.t1} srMode={srMode} srPeriod={srPeriod} venue={game.v} playerPos={pB.pos}/>}
               </React.Fragment>
             );
           })}
@@ -916,7 +976,7 @@ function App() {
               <div className="cr">
                 <div className="cl">SR Mode</div>
                 <div className="tg">
-                  {[['all','All Games'],['h2h','H2H'],['venue','Venue']].map(([v,l]) => (
+                  {[['all','All Games'],['posVsOpp','Pos vs Opp'],['h2h','H2H'],['venue','Venue']].map(([v,l]) => (
                     <button key={v} className={"tb"+(srMode===v?" on":"")} onClick={() => setSrMode(v)}>{l}</button>
                   ))}
                 </div>
